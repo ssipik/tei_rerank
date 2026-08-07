@@ -1,0 +1,41 @@
+# The TEI *reranker* service (ARCHITECTURE.md block 7) — a second TEI beside
+# ../tei, not a second model inside it: TEI serves one model per process.
+#
+# Model: BAAI/bge-reranker-v2-m3, a multilingual cross-encoder. It scores
+# (query, passage) pairs on POST /rerank with both halves attending to each
+# other, which is what beats the bi-encoder's cosine similarity — retrieve
+# top-30 hybrid, rerank, hand top-5 to the LLM.
+#
+# Served from ./model/bge-reranker-v2-m3 built by build_model.sh, not from the
+# hub — same two reasons as ../tei: it caps max_seq_length (which is what bounds
+# CPU memory) and removes the startup weight download, which HF_HUB_OFFLINE then
+# enforces. Same XLM-R-large backbone as bge-m3 (24 layers, 16 heads, 1024 hidden,
+# upstream limit 8192), so block 5's memory finding applies unchanged.
+services:
+  tei-rerank:
+    # Pinned by digest to the cpu-latest image running here on 2026-08-07
+    # (text-embeddings-router 1.9.3, built 2026-07-08) — same image as ../tei.
+    # The tag in front of the @ is only a human hint; docker resolves the digest.
+    # To move to a newer build: pull it, check /health and a real /rerank call,
+    # then update both the digest and this comment.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
+    command: >
+      --model-id ${TEI_RERANK_MODEL_ID:-/model/bge-reranker-v2-m3}
+      --max-batch-tokens ${TEI_RERANK_MAX_BATCH_TOKENS:-8192}
+      --tokenization-workers 4
+    environment:
+      HF_HUB_OFFLINE: "1"
+    ports:
+      - "8081:80"
+    volumes:
+      - ./model:/model:ro
+    # Sized off block 5's formula rather than copied from ../tei. Query-time load
+    # is ~30 passages, not thousand-chunk batches, so max-batch-tokens can be
+    # half TEI's default at no throughput cost:
+    #   seqs_per_pass = 8192 / 1536 = 5
+    #   5 x 1536^2 x 16 heads x 4 B ~= 755 MB  over ~2.3 GB of weights ~= 3 GB
+    # against bge-m3's ~4.7 GB. As with ../tei this limit is a safety net, not a
+    # tuning knob: on a regression Docker kills TEI instead of the host.
+    mem_limit: 6g
+    cpus: 8
+    restart: unless-stopped
